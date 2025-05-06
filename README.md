@@ -4,7 +4,14 @@
 This project provides a fully automated method to generate 3D porous structures (with spherical or elliptical pores) inside a cubic volume using FreeCAD.
 It uses Gaussian distribution to randomly distribute pores and avoids overlaps between them.
 
-Outputs are STL models and cross-sectional PNG images for visualization and further simulations.
+Outputs are STL and STEP models and cross-sectional PNG images for visualization and further simulations.
+### Key Features
+- **Fully Automated Generation**: Generate multiple porous models with a single command
+- **Customizable Porosity**: Control pore size, distribution, and density
+- **Multiple Pore Types**: Support for both spherical and elliptical pores
+- **Cross-Sectional Analysis**: Generate detailed 2D slices to visualize internal structure
+- **FreeCAD Integration**: Leverages powerful CAD capabilities with Python scripting
+- **STL Export**: Ready for 3D printing or further simulation
 
 ## ⚙️ Software Requirements
 | Tool | Version | Purpose |
