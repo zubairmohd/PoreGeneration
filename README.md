@@ -478,3 +478,6 @@ generate_models(
 This notebook provides a flexible, automated workflow for creating porous structures inside a 3D cube — useful for material science, AI simulations, or mechanical modeling.
 
 With minor extensions, elliptical pore randomization can be fully enabled too! 🚀
+
+## ⚡Further Steps 
+- Once you have generated the CAD data with pores ----- >  next step is to use Ansys Script to Run the simulations
