@@ -87,13 +87,13 @@ jupyter notebook
 import FreeCAD as App
 import FreeCADGui as Gui
 import Part
-import random
 import os
 import math
+import random
 
 def generate_gaussian_configuration(num_pores, mean, std_dev, cube_size, radius, gap):
     configuration = []
-    d_min = 2 * radius + gap  # Minimum distance between pore centers
+    d_min = 2 * radius + gap
 
     for _ in range(num_pores):
         attempts = 0
@@ -102,7 +102,6 @@ def generate_gaussian_configuration(num_pores, mean, std_dev, cube_size, radius,
             y = random.gauss(mean, std_dev) * cube_size
             z = random.gauss(mean, std_dev) * cube_size
 
-            # Check boundaries
             if not (radius <= x <= cube_size - radius and
                     radius <= y <= cube_size - radius and
                     radius <= z <= cube_size - radius):
@@ -113,6 +112,7 @@ def generate_gaussian_configuration(num_pores, mean, std_dev, cube_size, radius,
             if all(new_center.distanceToPoint(App.Vector(*c)) >= d_min for c in configuration):
                 configuration.append((x, y, z))
                 break
+
             attempts += 1
 
         if attempts >= 100:
@@ -126,18 +126,26 @@ def calculate_pore_volume(radius, num_pores):
 
 def save_views(view, output_dir, base_name):
     orientations = {
-        "top": view.viewTop,
-        "front": view.viewFront,
-        "right": view.viewRight,
-        "isometric": view.viewIsometric
+        "top": App.Vector(0, 0, 1),
+        "front": App.Vector(0, 1, 0),
+        "right": App.Vector(1, 0, 0),
+        "isometric": None  # handled separately
     }
-    for name, func in orientations.items():
-        func()
-        view.fitAll()
-        path = os.path.join(output_dir, f"{base_name}_{name}.png")
-        view.saveImage(path, 1024, 1024, 'Transparent')
 
-def generate_cross_sections(obj, plane, cube_size, output_dir, model_num, step_size=0.1):
+    for name, direction in orientations.items():
+        view.setCameraType("Orthographic")
+
+        if name == "isometric":
+            view.viewIsometric()
+        else:
+            view.setViewDirection(direction)
+
+        view.fitAll()
+        img_path = os.path.join(output_dir, f"{base_name}_{name}.png")
+        view.saveImage(img_path, 1024, 1024, 'White')
+
+
+def generate_cross_sections(obj, plane, cube_size, output_dir, model_name, model_id, step_size=0.1):
     offset = 0
     while offset <= cube_size:
         if plane == "XY":
@@ -154,28 +162,25 @@ def generate_cross_sections(obj, plane, cube_size, output_dir, model_num, step_s
             section_obj = App.ActiveDocument.addObject("Part::Feature", f"Section_{plane}_{offset:.1f}")
             section_obj.Shape = section_shape
 
-            # Hide all other objects to avoid shadows
             for o in App.ActiveDocument.Objects:
                 o.ViewObject.Visibility = False
             section_obj.ViewObject.Visibility = True
-
             App.ActiveDocument.recompute()
 
-            # Set orthographic view directly along slicing direction
             view = Gui.ActiveDocument.ActiveView
             view.setCameraType("Orthographic")
             view.setViewDirection(view_dir)
             view.fitAll()
 
-            # Save clean image
-            screenshot_path = os.path.join(output_dir, f"cross_section_{plane}_{offset:.1f}_model_{model_num}.png")
-            view.saveImage(screenshot_path, 1024, 1024, 'White')  # White background avoids transparency artifacts
+            img_path = os.path.join(
+                output_dir,
+                f"cross_section_{plane}_{offset:.2f}mm_model_{model_id}_{model_name}.png"
+            )
+            view.saveImage(img_path, 1024, 1024, 'White')
 
-            # Cleanup
             App.ActiveDocument.removeObject(section_obj.Name)
 
         offset += step_size
-
 
 def generate_models(
     num_pores=30,
@@ -183,10 +188,10 @@ def generate_models(
     base_dir=r"D:\PHD\Pores\new",
     mean=0.5,
     std_dev=0.15,
-    cube_size=1.0,  # mm
-    radius=0.04,    # mm
+    cube_size=1.0,
+    radius=0.04,
     gap=0.01,
-    solid_density=8.96  # g/cm³ for copper
+    solid_density=8.96  # g/cm³
 ):
     valid_models = 0
 
@@ -195,14 +200,16 @@ def generate_models(
         config = generate_gaussian_configuration(num_pores, mean, std_dev, cube_size, radius, gap)
 
         if config is None:
-            print("Skipping due to failed configuration")
+            print("Skipping model due to failed configuration.")
             continue
 
-        folder = f"Model_{valid_models + 1}_R{radius}_P{num_pores}"
-        model_dir = os.path.join(base_dir, folder)
+        model_id = valid_models + 1
+        model_name = f"R{radius:.3f}_P{num_pores}_Std{std_dev:.2f}_Gap{gap:.3f}_Cube{cube_size:.2f}mm"
+        folder_name = f"Model_{model_id}_{model_name}"
+        model_dir = os.path.join(base_dir, folder_name)
         os.makedirs(model_dir, exist_ok=True)
 
-        doc = App.newDocument(f"Model_{valid_models + 1}")
+        doc = App.newDocument(f"Model_{model_id}")
         cube = Part.makeBox(cube_size, cube_size, cube_size)
 
         for x, y, z in config:
@@ -214,39 +221,44 @@ def generate_models(
         obj.ViewObject.Transparency = 70
         App.ActiveDocument.recompute()
 
-        # Export STEP file
-        step_path = os.path.join(model_dir, f"model_{valid_models + 1}.step")
+        # Export STEP
+        step_path = os.path.join(model_dir, f"model_{model_id}_{model_name}.step")
         Part.export([obj], step_path)
-        print(f"Saved STEP file: {step_path}")
+        print(f"Saved STEP: {step_path}")
 
-        # Porosity calculation
-        V_cube = cube_size ** 3  # mm³
+        # Report
+        V_cube = cube_size ** 3
         V_pores = calculate_pore_volume(radius, num_pores)
         porosity = V_pores / V_cube
-        solid_density_mm3 = solid_density / 1000  # g/mm³
+        solid_density_mm3 = solid_density / 1000
         effective_density = solid_density_mm3 * (1 - porosity)
         mass = effective_density * V_cube
 
         with open(os.path.join(model_dir, "report.txt"), "w") as f:
-            f.write(f"Porosity: {porosity*100:.2f}%\n")
+            f.write(f"Model ID: {model_id}\n")
+            f.write(f"Radius: {radius:.3f} mm\n")
+            f.write(f"Pores: {num_pores}\n")
+            f.write(f"Std Dev: {std_dev:.2f}\n")
+            f.write(f"Gap: {gap:.3f} mm\n")
+            f.write(f"Cube Size: {cube_size:.2f} mm\n")
+            f.write(f"Porosity: {porosity * 100:.2f} %\n")
             f.write(f"Effective Density: {effective_density:.6f} g/mm³\n")
             f.write(f"Mass: {mass:.6f} g\n")
 
-        # Views and cross-sections
+        # Views and Slices
         if Gui.ActiveDocument:
             view = Gui.ActiveDocument.ActiveView
-            save_views(view, model_dir, f"model_{valid_models + 1}")
-            generate_cross_sections(obj, "XY", cube_size, model_dir, valid_models + 1)
-            generate_cross_sections(obj, "XZ", cube_size, model_dir, valid_models + 1)
+            save_views(view, model_dir, f"model_{model_id}_{model_name}")
+            generate_cross_sections(obj, "XY", cube_size, model_dir, model_name, model_id)
+            generate_cross_sections(obj, "XZ", cube_size, model_dir, model_name, model_id)
 
         App.closeDocument(doc.Name)
         valid_models += 1
 
-    print("✅ All models generated.")
+    print("\n✅ All models generated successfully.")
 
-# Run the function
+# 🔧 Run this to generate models
 generate_models()
-
 ```
 
 ### 2. Elliptical Pores Generation
