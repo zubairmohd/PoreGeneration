@@ -85,64 +85,123 @@ jupyter notebook
 
 ```python
 import FreeCAD as App
+import FreeCADGui as Gui
 import Part
 import random
 import os
-import FreeCADGui as Gui
+import math
 
-def generate_gaussian_configuration(num_pores, mean, std_dev, min_distance, cube_size, radius, gap):
-    """
-    Generate a Gaussian configuration for spherical pore centers without overlap.
-    """
+def generate_gaussian_configuration(num_pores, mean, std_dev, cube_size, radius, gap):
     configuration = []
     d_min = 2 * radius + gap  # Minimum distance between pore centers
 
     for _ in range(num_pores):
         attempts = 0
-        while True:
-            # Generate a random position within the cube
-            x = round(random.gauss(mean, std_dev), 4) * cube_size
-            y = round(random.gauss(mean, std_dev), 4) * cube_size
-            z = round(random.gauss(mean, std_dev), 4) * cube_size
+        while attempts < 100:
+            x = random.gauss(mean, std_dev) * cube_size
+            y = random.gauss(mean, std_dev) * cube_size
+            z = random.gauss(mean, std_dev) * cube_size
 
-            # Ensure the sphere fits within the cube boundaries
-            if (radius <= x <= cube_size - radius) and \
-               (radius <= y <= cube_size - radius) and \
-               (radius <= z <= cube_size - radius):
-                new_center = (x, y, z)
+            # Check boundaries
+            if not (radius <= x <= cube_size - radius and
+                    radius <= y <= cube_size - radius and
+                    radius <= z <= cube_size - radius):
+                attempts += 1
+                continue
 
-                # Check distance from all previously placed pores
-                if all(App.Vector(*new_center).distanceToPoint(App.Vector(*center)) >= d_min for center in configuration):
-                    configuration.append(new_center)
-                    break
-
+            new_center = App.Vector(x, y, z)
+            if all(new_center.distanceToPoint(App.Vector(*c)) >= d_min for c in configuration):
+                configuration.append((x, y, z))
+                break
             attempts += 1
-            if attempts > 100:  # Limit attempts to prevent infinite loops
-                print("Could not place pore without overlap after 100 attempts.")
-                return configuration  # Return the configuration generated so far
+
+        if attempts >= 100:
+            print("Failed to place a pore after 100 attempts.")
+            return None
 
     return configuration
 
+def calculate_pore_volume(radius, num_pores):
+    return num_pores * (4 / 3) * math.pi * radius**3
 
-def generate_models(num_pores, model_count, base_dir, mean, std_dev, min_distance, cube_size, radius, gap):
-    """
-    Generate models with spherical pores, save STL files, and save cross-section images.
-    """
+def save_views(view, output_dir, base_name):
+    orientations = {
+        "top": view.viewTop,
+        "front": view.viewFront,
+        "right": view.viewRight,
+        "isometric": view.viewIsometric
+    }
+    for name, func in orientations.items():
+        func()
+        view.fitAll()
+        path = os.path.join(output_dir, f"{base_name}_{name}.png")
+        view.saveImage(path, 1024, 1024, 'Transparent')
+
+def generate_cross_sections(obj, plane, cube_size, output_dir, model_num, step_size=0.1):
+    offset = 0
+    while offset <= cube_size:
+        if plane == "XY":
+            section_plane = Part.makePlane(cube_size, cube_size, App.Vector(0, 0, offset), App.Vector(0, 0, 1))
+            view_dir = App.Vector(0, 0, 1)
+        elif plane == "XZ":
+            section_plane = Part.makePlane(cube_size, cube_size, App.Vector(0, offset, 0), App.Vector(0, 1, 0))
+            view_dir = App.Vector(0, 1, 0)
+        else:
+            raise ValueError("Unsupported plane")
+
+        section_shape = obj.Shape.common(section_plane)
+        if not section_shape.isNull():
+            section_obj = App.ActiveDocument.addObject("Part::Feature", f"Section_{plane}_{offset:.1f}")
+            section_obj.Shape = section_shape
+
+            # Hide all other objects to avoid shadows
+            for o in App.ActiveDocument.Objects:
+                o.ViewObject.Visibility = False
+            section_obj.ViewObject.Visibility = True
+
+            App.ActiveDocument.recompute()
+
+            # Set orthographic view directly along slicing direction
+            view = Gui.ActiveDocument.ActiveView
+            view.setCameraType("Orthographic")
+            view.setViewDirection(view_dir)
+            view.fitAll()
+
+            # Save clean image
+            screenshot_path = os.path.join(output_dir, f"cross_section_{plane}_{offset:.1f}_model_{model_num}.png")
+            view.saveImage(screenshot_path, 1024, 1024, 'White')  # White background avoids transparency artifacts
+
+            # Cleanup
+            App.ActiveDocument.removeObject(section_obj.Name)
+
+        offset += step_size
+
+
+def generate_models(
+    num_pores=30,
+    model_count=2,
+    base_dir=r"D:\PHD\Pores\new",
+    mean=0.5,
+    std_dev=0.15,
+    cube_size=1.0,  # mm
+    radius=0.04,    # mm
+    gap=0.01,
+    solid_density=8.96  # g/cm³ for copper
+):
     valid_models = 0
 
     while valid_models < model_count:
-        config = generate_gaussian_configuration(num_pores, mean, std_dev, min_distance, cube_size, radius, gap)
+        print(f"\nGenerating model {valid_models + 1}")
+        config = generate_gaussian_configuration(num_pores, mean, std_dev, cube_size, radius, gap)
 
         if config is None:
-            print(f"Skipping model {valid_models + 1} due to invalid configuration.")
+            print("Skipping due to failed configuration")
             continue
 
-        # Create a directory for this model
-        folder_name = f"Model_Radius_{radius:.2f}_StdDev_{std_dev:.2f}_Pores_{num_pores}_{valid_models + 1}"
-        model_dir = os.path.join(base_dir, folder_name)
+        folder = f"Model_{valid_models + 1}_R{radius}_P{num_pores}"
+        model_dir = os.path.join(base_dir, folder)
         os.makedirs(model_dir, exist_ok=True)
 
-        # Create a new FreeCAD document
         doc = App.newDocument(f"Model_{valid_models + 1}")
         cube = Part.makeBox(cube_size, cube_size, cube_size)
 
@@ -150,84 +209,44 @@ def generate_models(num_pores, model_count, base_dir, mean, std_dev, min_distanc
             sphere = Part.makeSphere(radius, App.Vector(x, y, z))
             cube = cube.cut(sphere)
 
-        final_obj = doc.addObject("Part::Feature", "CubeWithPores")
-        final_obj.Shape = cube
-        final_obj.ViewObject.Transparency = 70
+        obj = doc.addObject("Part::Feature", "CubeWithPores")
+        obj.Shape = cube
+        obj.ViewObject.Transparency = 70
+        App.ActiveDocument.recompute()
 
-        # Save the full 3D model as STL
-        stl_path = os.path.join(model_dir, f"Model_Radius_{radius:.2f}_StdDev_{std_dev:.2f}_Pores_{num_pores}_model_{valid_models + 1}.stp")
-        Part.export([final_obj], stl_path)
+        # Export STEP file
+        step_path = os.path.join(model_dir, f"model_{valid_models + 1}.step")
+        Part.export([obj], step_path)
+        print(f"Saved STEP file: {step_path}")
 
-        # Save different views of the model
+        # Porosity calculation
+        V_cube = cube_size ** 3  # mm³
+        V_pores = calculate_pore_volume(radius, num_pores)
+        porosity = V_pores / V_cube
+        solid_density_mm3 = solid_density / 1000  # g/mm³
+        effective_density = solid_density_mm3 * (1 - porosity)
+        mass = effective_density * V_cube
+
+        with open(os.path.join(model_dir, "report.txt"), "w") as f:
+            f.write(f"Porosity: {porosity*100:.2f}%\n")
+            f.write(f"Effective Density: {effective_density:.6f} g/mm³\n")
+            f.write(f"Mass: {mass:.6f} g\n")
+
+        # Views and cross-sections
         if Gui.ActiveDocument:
             view = Gui.ActiveDocument.ActiveView
-            save_model_views(view, model_dir, f"model_{valid_models + 1}")
-
-        # Generate and save cross-sectional images at every 0.1 mm
-        for plane in ["XY", "XZ"]:
-            generate_cross_section_images(final_obj, plane, cube_size, model_dir, valid_models + 1, step_size=0.1)
+            save_views(view, model_dir, f"model_{valid_models + 1}")
+            generate_cross_sections(obj, "XY", cube_size, model_dir, valid_models + 1)
+            generate_cross_sections(obj, "XZ", cube_size, model_dir, valid_models + 1)
 
         App.closeDocument(doc.Name)
         valid_models += 1
 
-def generate_cross_section_images(obj, plane, cube_size, output_dir, model_num, step_size=0.1):
-    """
-    Generate and save cross-section images at every 0.1 mm along the specified plane.
-    """
-    offset = 0
-    while offset <= cube_size:
-        if plane == "XY":
-            section_plane = Part.makePlane(cube_size, cube_size, App.Vector(0, 0, offset), App.Vector(0, 0, 1))
-        elif plane == "XZ":
-            section_plane = Part.makePlane(cube_size, cube_size, App.Vector(0, offset, 0), App.Vector(0, 1, 0))
-        else:
-            raise ValueError("Invalid plane. Choose between 'XY', 'XZ'.")
+    print("✅ All models generated.")
 
-        # Compute the cross-section
-        section_shape = obj.Shape.common(section_plane)
-        if section_shape.isNull():
-            offset += step_size
-            continue
+# Run the function
+generate_models()
 
-        # Add the cross-section to the document
-        section_obj = App.ActiveDocument.addObject("Part::Feature", f"CrossSection_{plane}_{offset:.1f}_model_{model_num}")
-        section_obj.Shape = section_shape
-
-        App.ActiveDocument.recompute()
-
-        # Save the image of the cross-section
-        if Gui.ActiveDocument:
-            view = Gui.ActiveDocument.ActiveView
-            view.viewIsometric()
-            view.fitAll()
-            if plane == "XY":
-                view.viewTop()
-            elif plane == "XZ":
-                view.viewFront()
-
-            screenshot_path = os.path.join(output_dir, f"cross_section_{plane}_{offset:.1f}_model_{model_num}.png")
-            view.saveImage(screenshot_path, 1024, 1024, 'Transparent')
-
-        # Remove the cross-section object after saving the image
-        App.ActiveDocument.removeObject(section_obj.Name)
-        offset += step_size
-
-def save_model_views(view, folder_path, base_name):
-    """
-    Save isometric, front, top, and right views of the model.
-    """
-    orientations = {
-        "isometric": view.viewIsometric,
-        "front": view.viewFront,
-        "top": view.viewTop,
-        "right": view.viewRight,
-    }
-
-    for orientation, func in orientations.items():
-        func()
-        view.fitAll()
-        image_path = os.path.join(folder_path, f"{base_name}_{orientation}.png")
-        view.saveImage(image_path, 1024, 1024, 'Transparent')
 ```
 
 ### 2. Elliptical Pores Generation
