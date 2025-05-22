@@ -146,41 +146,58 @@ def save_views(view, output_dir, base_name):
 
 
 def generate_cross_sections(obj, plane, cube_size, output_dir, model_name, model_id, step_size=0.1):
-    offset = 0
+    """
+    Generate and save cross-section images at every 0.1 mm along the specified plane,
+    hiding the full model for a clean slice.
+    """
+    offset = 0.0
     while offset <= cube_size:
         if plane == "XY":
             section_plane = Part.makePlane(cube_size, cube_size, App.Vector(0, 0, offset), App.Vector(0, 0, 1))
-            view_dir = App.Vector(0, 0, 1)
         elif plane == "XZ":
             section_plane = Part.makePlane(cube_size, cube_size, App.Vector(0, offset, 0), App.Vector(0, 1, 0))
-            view_dir = App.Vector(0, 1, 0)
         else:
-            raise ValueError("Unsupported plane")
+            raise ValueError("❌ Invalid plane. Use 'XY' or 'XZ'.")
 
+        # Compute cross-section shape
         section_shape = obj.Shape.common(section_plane)
-        if not section_shape.isNull():
-            section_obj = App.ActiveDocument.addObject("Part::Feature", f"Section_{plane}_{offset:.1f}")
-            section_obj.Shape = section_shape
+        if section_shape.isNull():
+            offset += step_size
+            continue
 
-            for o in App.ActiveDocument.Objects:
-                o.ViewObject.Visibility = False
-            section_obj.ViewObject.Visibility = True
-            App.ActiveDocument.recompute()
+        # Add to document
+        section_obj = App.ActiveDocument.addObject("Part::Feature", f"CrossSection_{plane}_{offset:.2f}_model_{model_id}")
+        section_obj.Shape = section_shape
 
+        # Hide the original model for clean screenshot
+        obj.ViewObject.Visibility = False
+
+        App.ActiveDocument.recompute()
+
+        # Set view and save
+        if Gui.ActiveDocument:
             view = Gui.ActiveDocument.ActiveView
             view.setCameraType("Orthographic")
-            view.setViewDirection(view_dir)
+
+            # Set view direction EXACTLY and force recomputation
+            if plane == "XY":
+                view.viewTop()  # = Z+
+            elif plane == "XZ":
+                view.viewFront()  # = Y+
+
             view.fitAll()
+            Gui.updateGui()  # Ensure the view is updated
 
-            img_path = os.path.join(
-                output_dir,
-                f"cross_section_{plane}_{offset:.2f}mm_model_{model_id}_{model_name}.png"
-            )
-            view.saveImage(img_path, 1024, 1024, 'White')
+            screenshot_path = os.path.join(output_dir, f"cross_section_{plane}_{offset:.2f}_model_{model_name}.png")
+            view.saveImage(screenshot_path, 1024, 1024, 'White')
 
-            App.ActiveDocument.removeObject(section_obj.Name)
+
+        # Restore visibility and clean up
+        obj.ViewObject.Visibility = True
+        App.ActiveDocument.removeObject(section_obj.Name)
 
         offset += step_size
+
 
 def generate_models(
     num_pores=30,
